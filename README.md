@@ -2,7 +2,7 @@
 
 > 在 macOS 上通过 AsusSMC 读写 ASUS 笔记本风扇档位，并在菜单栏常驻显示实时转速。
 
-开发者：zsz　　版本：v1.0.0
+开发者：zsz　　版本：v1.1.0
 
 ## 许可证
 
@@ -30,7 +30,17 @@ This program is free software: you can redistribute it and/or modify it under th
 
 ## 下载安装
 
-目前以源码方式分发，暂未提供预编译安装包；发布页见 [Releases](https://github.com/zsz-of/ASUS-Fan-Control/releases)。
+从 [Releases](https://github.com/zsz-of/ASUS-Fan-Control/releases) 下载 `ASUS-Fan-Control-1.1.0.dmg` 或 `ASUS-Fan-Control-1.1.0.pkg`。
+
+推荐用 PKG 安装，它会一次装好应用、`asus-fan` 命令行与 `sudoers` 免密规则：
+
+```sh
+sudo installer -pkg ASUS-Fan-Control-1.1.0.pkg -target /
+```
+
+DMG 内含同一份 PKG 与应用本体；也可只把 `ASUS 风扇控制.app` 拖进「应用程序」，但需自行安装 CLI 与配置免密规则。应用未做开发者签名，首次打开若被拦截，请在访达中右键 →「打开」。安装后启动一次，菜单栏出现风扇图标，勾选窗口内「登录时自动启动」即可常驻。
+
+从源码安装：
 
 ```sh
 git clone https://github.com/zsz-of/ASUS-Fan-Control.git
@@ -38,7 +48,7 @@ cd ASUS-Fan-Control
 ./build.sh
 ```
 
-`build.sh` 会完成四件事：组装 `/Applications/ASUS 风扇控制.app`、安装 `/usr/local/bin/asus-fan`、注册登录项 `~/Library/LaunchAgents/com.zsz.asusfan.plist`、启动菜单栏应用。
+`build.sh` 会完成四件事：组装 `/Applications/ASUS 风扇控制.app`、安装 `/usr/local/bin/asus-fan`、注册登录项 `~/Library/LaunchAgents/com.zsz.asusfan.plist`、启动菜单栏应用。`./package.sh` 则把 PKG 与 DMG 输出到仓库外的 `dist/`。
 
 卸载：
 
@@ -46,7 +56,7 @@ cd ASUS-Fan-Control
 launchctl bootout gui/$(id -u)/com.zsz.asusfan
 rm -f ~/Library/LaunchAgents/com.zsz.asusfan.plist
 rm -rf "/Applications/ASUS 风扇控制.app"
-sudo rm -f /usr/local/bin/asus-fan
+sudo rm -f /usr/local/bin/asus-fan /etc/sudoers.d/asusfan
 ```
 
 ## 项目简介
@@ -67,7 +77,8 @@ sudo rm -f /usr/local/bin/asus-fan
 | 功能 | 说明 | 依赖 |
 |---|---|---|
 | 菜单栏常驻 | SF Symbol `fanblades` 图标，左键显示/隐藏窗口，右键弹快捷菜单 | AppKit |
-| 三档风扇模式 | 自动（0，默认）、强力 Overboost（1）、静音 Silent（2） | SMC `F0Md` |
+| 四档风扇模式 | 自动（0，默认）、强力 Overboost（1）、静音 Silent（2）、智能（3，按负载与热压力自动切换） | SMC `F0Md` |
+| 智能调速 | 每 15 秒采样 1 分钟平均负载与 `machdep.xcpm.cpu_thermal_level`，连续两次判定一致才换档 | sysctl / launchd |
 | 实时转速 | 每 2 秒刷新一次真实 RPM | SMC `F0Ac` |
 | 登录自启 | 窗口内开关，写入/删除 LaunchAgent | launchd |
 | 命令行控制 | `asus-fan status`、`sudo asus-fan set <0\|1\|2>` | CLI 二进制 |
@@ -77,12 +88,15 @@ sudo rm -f /usr/local/bin/asus-fan
 ```
 ASUS-Fan-Control/                 # GitHub 仓库根
 ├── README.md
+├── CHANGELOG.md
 ├── LICENSE                       # GPL-3.0 官方全文
 ├── .gitignore
 ├── build.sh                      # 组装 .app、安装 CLI、注册登录项
+├── package.sh                    # 生成 dist/ 下的 PKG 与 DMG
 ├── src/
 │   ├── asusfan_app.py            # 菜单栏应用源码（PyObjC/AppKit）
 │   ├── Info.plist                # .app 的 Info.plist
+│   ├── AppIcon.icns              # 应用图标（SF Symbol fanblades + 圆角渐变底）
 │   └── launcher.sh               # .app 可执行入口
 ├── bin/
 │   └── asus-fan                  # 风扇读写 CLI（Mach-O x86_64）
@@ -109,7 +123,7 @@ asus-fan status
 sudo asus-fan set 1
 ```
 
-首次运行：`./build.sh` 完成后菜单栏即出现风扇图标；点击图标在「自动 / 强力 / 静音」间切换。
+首次运行：`./build.sh` 完成后菜单栏即出现风扇图标；点击图标在「自动 / 强力 / 静音 / 智能」间切换。
 
 ## 配置位置
 
@@ -120,6 +134,13 @@ sudo asus-fan set 1
 | 登录自启 | `~/Library/LaunchAgents/com.zsz.asusfan.plist` |
 
 程序不写任何额外配置文件；风扇档位不持久化，重启后回到 EC 默认策略。
+
+## 已知限制
+
+- 风扇档位不写入磁盘持久化，重启失效属正常。
+- 温度/风扇不走标准 SMC 键，`powermetrics --samplers smc` 读到的是无效数据，请以 `asus-fan status` 为准。
+- 应用未做代码签名，系统大版本升级后需重新验证 PyObjC 兼容性。
+- `bin/asus-fan` 仅含 x86_64 架构，Apple Silicon 原生运行未验证。
 
 ## 实测数据
 

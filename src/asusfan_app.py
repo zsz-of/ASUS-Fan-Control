@@ -42,8 +42,15 @@ APP_PATH = "/Applications/ASUS 风扇控制.app"
 LABEL = "com.zsz.asusfan"
 PLIST_PATH = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % LABEL)
 
-MODES = [(0, "自动 / 默认"), (1, "强力 (Overboost)"), (2, "静音 (Silent)")]
-MODE_NAMES = {0: "自动", 1: "强力", 2: "静音"}
+MODES = [
+    (0, "自动 / 默认"),
+    (1, "强力 (Overboost)"),
+    (2, "静音 (Silent)"),
+    (3, "智能（按负载与热量自动切换）"),
+]
+MODE_NAMES = {0: "自动", 1: "强力", 2: "静音", 3: "智能"}
+SMART = 3
+SMART_INTERVAL = 15.0
 
 PLIST_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -96,17 +103,45 @@ def write_mode(mode):
         return False, str(exc)
 
 
+def read_load_ratio():
+    """1 分钟平均负载 / 核心数，作为持续负载的粗略指标。"""
+    try:
+        return os.getloadavg()[0] / max(1, os.cpu_count() or 1)
+    except OSError:
+        return 0.0
+
+
+def read_thermal_level():
+    """Intel XCPM 热压力等级，0 为正常，越高越热。"""
+    try:
+        out = subprocess.run(
+            ["/usr/sbin/sysctl", "-n", "machdep.xcpm.cpu_thermal_level"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        ).stdout.strip()
+        return int(out) if out else 0
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return 0
+
+
 class AppDelegate(NSObject):
     def applicationDidFinishLaunching_(self, _note):
         self.mode = None
         self.radios = []
         self.menu_mode_items = {}
+        self.smart = False
+        self.smart_pending = None
+        self.smart_pending_count = 0
         self._build_status_item()
         self._build_window()
         self._build_menu()
         self.refresh_(None)
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
             2.0, self, "refresh:", None, True
+        )
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            SMART_INTERVAL, self, "smartTick:", None, True
         )
 
     # ---------- 菜单栏 ----------
@@ -254,23 +289,37 @@ class AppDelegate(NSObject):
             self.menu_rpm.setTitle_("风扇状态不可读")
             return
         self.rpmLabel.setStringValue_("%s RPM" % (rpm if rpm is not None else "--"))
-        self.stateLabel.setStringValue_(
-            "当前模式：%s" % MODE_NAMES.get(mode, "未知")
-        )
+        if not self.smart:
+            self.stateLabel.setStringValue_(
+                "当前模式：%s" % MODE_NAMES.get(mode, "未知")
+            )
         self.menu_rpm.setTitle_("转速 %s RPM" % (rpm if rpm is not None else "--"))
-        if mode != self.mode:
-            self.mode = mode
+        if self.smart:
+            selected = SMART
+        else:
+            selected = mode
+        if selected != self.mode:
+            self.mode = selected
             for value, btn in self.radios:
                 btn.setState_(
-                    NSControlStateValueOn if value == mode else NSControlStateValueOff
+                    NSControlStateValueOn if value == selected else NSControlStateValueOff
                 )
             for value, item in self.menu_mode_items.items():
                 item.setState_(
-                    NSControlStateValueOn if value == mode else NSControlStateValueOff
+                    NSControlStateValueOn if value == selected else NSControlStateValueOff
                 )
 
     @python_method
     def _apply(self, mode):
+        if mode == SMART:
+            self.smart = True
+            self.smart_pending = None
+            self.smart_pending_count = 0
+            self.mode = None
+            self.smartTick_(None)
+            self.refresh_(None)
+            return
+        self.smart = False
         ok, err = write_mode(mode)
         if ok:
             self.mode = None  # 触发下一次刷新同步 UI
@@ -278,6 +327,48 @@ class AppDelegate(NSObject):
         else:
             self.stateLabel.setStringValue_("切换失败：%s" % (err or "检查 sudo 免密"))
             NSSound.beep()
+
+    @python_method
+    def _smart_target(self):
+        """返回 (目标档位, 负载百分比, 热压力等级)。
+
+        负载 ≥60% 或热压力 ≥1：强力；负载 ≥25%：默认；其余：静音。
+        """
+        ratio = read_load_ratio()
+        thermal = read_thermal_level()
+        if thermal >= 1 or ratio >= 0.60:
+            target = 1
+        elif ratio >= 0.25:
+            target = 0
+        else:
+            target = 2
+        return target, int(ratio * 100), thermal
+
+    def smartTick_(self, _timer):
+        if not self.smart:
+            return
+        target, load_pct, thermal = self._smart_target()
+        # 连续两次判定一致才执行，避免在阈值附近来回跳档
+        if target == self.smart_pending:
+            self.smart_pending_count += 1
+        else:
+            self.smart_pending = target
+            self.smart_pending_count = 1
+        if self.smart_pending_count < 2:
+            return
+        _rpm, mode = read_status()
+        if mode != target:
+            ok, err = write_mode(target)
+            if not ok:
+                self.stateLabel.setStringValue_(
+                    "智能切换失败：%s" % (err or "检查 sudo 免密")
+                )
+                return
+            self.mode = None
+        self.stateLabel.setStringValue_(
+            "智能：负载 %d%% / 热量 %d → %s"
+            % (load_pct, thermal, MODE_NAMES[target])
+        )
 
     def radioChanged_(self, sender):
         self._apply(sender.tag())

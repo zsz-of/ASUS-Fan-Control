@@ -13,11 +13,13 @@ echo "== 组装 app =="
 sudo rm -rf "$APP"
 sudo mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 sudo cp "$ROOT/src/Info.plist" "$APP/Contents/Info.plist"
+sudo cp "$ROOT/src/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 sudo cp "$ROOT/src/asusfan_app.py" "$APP/Contents/Resources/asusfan_app.py"
 sudo cp "$ROOT/src/launcher.sh" "$APP/Contents/MacOS/asusfan"
 sudo chmod 755 "$APP/Contents/MacOS/asusfan"
 sudo chown -R root:wheel "$APP"
-"$PY" -m py_compile "$APP/Contents/Resources/asusfan_app.py"
+# 目录属 root，编译缓存也必须以 root 身份写入
+sudo "$PY" -m py_compile "$APP/Contents/Resources/asusfan_app.py"
 
 echo "== 安装 CLI =="
 sudo install -m 755 "$ROOT/bin/asus-fan" /usr/local/bin/asus-fan
