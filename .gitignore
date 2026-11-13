@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+._*
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+
+# AI 开发上下文（本地，不入库）
+.agents/
+
+# 构建/安装中间产物
+dist/
+*.log
+*.tmp
+*.bak
