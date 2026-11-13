@@ -2,7 +2,7 @@
 
 > 在 macOS 上通过 AsusSMC 读写 ASUS 笔记本风扇档位，并在菜单栏常驻显示实时转速。
 
-开发者：zsz　　版本：v1.1.0
+开发者：zsz　　版本：v1.2.0
 
 ## 许可证
 
@@ -28,14 +28,38 @@ This program is free software: you can redistribute it and/or modify it under th
 
 > 系统自带 `/usr/bin/python3`（Tk 8.5）在 macOS 15 上无法创建窗口，本项目改用 PyObjC/AppKit，不依赖 Tk。
 
+## 适用条件
+
+| 项 | 条件 |
+|---|---|
+| 机型 | ASUS 笔记本，且其 EC 风扇模式能被 `AsusSMC` 映射为 `F0Md`（实测：i5-13500H + Iris Xe 的 ROG / TUF 类机型） |
+| 系统 | macOS 11.0 及以上，x86_64（实测 macOS 15.8 Sequoia） |
+| 引导 | OpenCore + `VirtualSMC`、`SMCProcessor`、`SMCSuperIO` |
+| 驱动 | `AsusSMC` 1.4.2 **并已打亮度派发补丁**（见下节），否则可能触发 Caps Lock 降亮度 |
+| 权限 | 需 root 写 `F0Md`；安装包会写入 `sudoers.d` 免密规则 |
+
+不满足上述硬件条件的机器只能显示菜单栏界面，读取不到转速与档位。非 ASUS 笔记本、Apple Silicon、以及 EC 未暴露风扇模式的 ASUS 机型不在支持范围。
+
+## 驱动补丁（必须）
+
+`AsusSMC` 的 `handleMessage()` 会把 ATK 通知码与 `0xF0` 相与，结果等于 `0x20` 就派发「亮度减」、等于 `0x10` 就派发「亮度加」。部分 ASUS 机型在切换大写锁定时发出 `0x2C`，因此每次按 Caps Lock 都会降一档亮度。
+
+本仓库不附带修改后的二进制（`AsusSMC` 为 GPL-3.0，分发衍生物需同时提供源码），只提供单字节补丁脚本 [tools/patch_asussmc.py](tools/patch_asussmc.py)，请对自己下载的 `AsusSMC.kext` 1.4.2 执行：
+
+```sh
+python3 tools/patch_asussmc.py /path/to/AsusSMC.kext -o /tmp/AsusSMC-patched.kext
+```
+
+脚本会把 `andl $-0x10, %eax`（`83 E0 F0`）改为 `andl $0x0, %eax`（`83 E0 00`），使亮度派发分支不再命中；`F0Md` / `F0Ac` 风扇键不受影响。把输出目录替换到 `EFI/OC/Kexts/AsusSMC.kext` 后重启即可。打完补丁后按 Caps Lock 不再改亮度，Fn 亮度键仍由系统原生路径处理。
+
 ## 下载安装
 
-从 [Releases](https://github.com/zsz-of/ASUS-Fan-Control/releases) 下载 `ASUS-Fan-Control-1.1.0.dmg` 或 `ASUS-Fan-Control-1.1.0.pkg`。
+从 [Releases](https://github.com/zsz-of/ASUS-Fan-Control/releases) 下载 `ASUS-Fan-Control-1.2.0.dmg` 或 `ASUS-Fan-Control-1.2.0.pkg`。
 
 推荐用 PKG 安装，它会一次装好应用、`asus-fan` 命令行与 `sudoers` 免密规则：
 
 ```sh
-sudo installer -pkg ASUS-Fan-Control-1.1.0.pkg -target /
+sudo installer -pkg ASUS-Fan-Control-1.2.0.pkg -target /
 ```
 
 DMG 内含同一份 PKG 与应用本体；也可只把 `ASUS 风扇控制.app` 拖进「应用程序」，但需自行安装 CLI 与配置免密规则。应用未做开发者签名，首次打开若被拦截，请在访达中右键 →「打开」。安装后启动一次，菜单栏出现风扇图标，勾选窗口内「登录时自动启动」即可常驻。
@@ -100,6 +124,8 @@ ASUS-Fan-Control/                 # GitHub 仓库根
 │   └── launcher.sh               # .app 可执行入口
 ├── bin/
 │   └── asus-fan                  # 风扇读写 CLI（Mach-O x86_64）
+├── tools/
+│   └── patch_asussmc.py          # 给 AsusSMC 1.4.2 打亮度派发补丁
 └── launchd/
     └── com.zsz.asusfan.plist     # 登录自启定义
 ```
@@ -137,21 +163,23 @@ sudo asus-fan set 1
 
 ## 已知限制
 
+- 必须使用打过补丁的 `AsusSMC` 1.4.2，否则 Caps Lock 会触发亮度下降（见「驱动补丁」）。
 - 风扇档位不写入磁盘持久化，重启失效属正常。
 - 温度/风扇不走标准 SMC 键，`powermetrics --samplers smc` 读到的是无效数据，请以 `asus-fan status` 为准。
 - 应用未做代码签名，系统大版本升级后需重新验证 PyObjC 兼容性。
 - `bin/asus-fan` 仅含 x86_64 架构，Apple Silicon 原生运行未验证。
+- 本机的 SMC 未暴露任何 `TC*` 温度键，智能档只能依据负载与 XCPM 热压力判断。
 
 ## 实测数据
 
 | 场景 | 转速 |
 |---|---|
-| 空闲（默认档） | ~831–848 RPM |
+| 空闲（默认档） | ~831–903 RPM |
 | 12 线程满载 · 静音 | ~900–903 RPM |
 | 12 线程满载 · 强力 | 峰值 1021–1049 RPM |
 | 12 线程满载 · 默认 | ~830 RPM |
 
-结论：风扇由 EC 按温度闭环控制，档位只改变曲线偏移，短时负载差距较小，持续负载才会明显拉开。
+转速来自 EC 实时回读，随负载与档位连续变化（同一档位下也会有小幅波动），不是固定占位值。结论：风扇由 EC 按温度闭环控制，档位只改变曲线偏移，短时负载差距较小，持续负载才会明显拉开。
 
 ## 开源引用
 
